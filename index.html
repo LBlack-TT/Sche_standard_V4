@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>企业物料反查 & BOM比对系统 (V3.4 弹窗搜库版)</title>
+    <title>企业物料反查 & BOM比对系统 (V3.5 自动刷新版)</title>
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
     
@@ -81,11 +81,11 @@
         .diff-text { color: #e74c3c; text-decoration: line-through; margin-right: 5px; font-size: 0.9em; }
         .correct-text { color: #27ae60; font-weight: bold; }
 
-        .mode-selector { display: flex; gap: 20px; margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 6px; border: 1px solid #eee; }
+        .mode-selector { display: flex; gap: 20px; margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 6px; border: 1px solid #eee; align-items: center;}
         .radio-label { display: flex; align-items: center; cursor: pointer; font-weight: normal; margin: 0; }
         .radio-label input { margin-right: 8px; transform: scale(1.2); }
 
-        /* ★★★ 新增：弹窗样式 (Modal) ★★★ */
+        /* 弹窗样式 (Modal) */
         .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
         .modal-content { background-color: #fff; margin: 10% auto; padding: 25px; border-radius: 8px; width: 600px; max-width: 90%; box-shadow: 0 5px 15px rgba(0,0,0,0.3); animation: slideDown 0.3s; }
         @keyframes slideDown { from {transform: translateY(-50px); opacity: 0;} to {transform: translateY(0); opacity: 1;} }
@@ -155,13 +155,13 @@
             <label>第一步：选择比对依据</label>
             <div class="mode-selector">
                 <label class="radio-label">
-                    <input type="radio" name="matchMode" value="pn" checked> 按品号匹配 (默认)
-                    <span style="font-size:12px; color:#888; margin-left:5px;">- 验证规格是否正确</span>
+                    <input type="radio" name="matchMode" value="pn" checked onchange="refreshBOMReport()"> 按品号匹配 (默认)
                 </label>
                 <label class="radio-label">
-                    <input type="radio" name="matchMode" value="spec"> 按规格匹配
-                    <span style="font-size:12px; color:#888; margin-left:5px;">- 反查品号是否正确</span>
+                    <input type="radio" name="matchMode" value="spec" onchange="refreshBOMReport()"> 按规格匹配
                 </label>
+                <div style="flex:1"></div>
+                <button onclick="clearBOMResults()" style="padding: 5px 15px; font-size: 13px; background: #eee; color: #555;">🗑️ 清空结果</button>
             </div>
 
             <label>第二步：上传 BOM 表</label>
@@ -205,17 +205,16 @@
     const FILES_KEY = 'mat_files_v3';
     let globalDB = []; // 系统库数据
     let loadedFiles = []; // 已加载文件列表
+    let lastBOMData = null; // ★★★ 新增：暂存当前 BOM 数据，用于自动刷新 ★★★
 
     // 初始化
     document.addEventListener('DOMContentLoaded', async () => {
         await loadCache();
         
-        // 绑定弹窗回车搜索
         document.getElementById('modalInput').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') runModalSearch();
         });
         
-        // 点击弹窗外部关闭
         window.onclick = function(event) {
             const modal = document.getElementById('searchModal');
             if (event.target == modal) closeModal();
@@ -320,16 +319,34 @@
             try {
                 const wb = XLSX.read(e.target.result, {type:'array'});
                 const ws = wb.Sheets[wb.SheetNames[0]];
-                const bomData = XLSX.utils.sheet_to_json(ws); 
+                const bomData = XLSX.utils.sheet_to_json(ws);
+                lastBOMData = bomData; // ★★★ 保存数据到内存 ★★★
                 renderBOMReport(bomData);
             } catch (err) { alert("BOM 解析失败"); }
         };
         reader.readAsArrayBuffer(file);
     }
 
+    // ★★★ 自动刷新逻辑 ★★★
+    window.refreshBOMReport = function() {
+        // 先清空界面
+        document.getElementById('bomResultArea').innerHTML = "";
+        // 如果内存里有数据，立即重新渲染
+        if (lastBOMData && lastBOMData.length > 0) {
+            renderBOMReport(lastBOMData);
+        }
+    }
+
+    // ★★★ 手动清空逻辑 ★★★
+    window.clearBOMResults = function() {
+        document.getElementById('bomResultArea').innerHTML = "";
+        lastBOMData = null; // 清空内存数据
+        document.getElementById('bomFileInput').value = ""; // 重置文件框
+    }
+
     function renderBOMReport(bomData) {
         const div = document.getElementById('bomResultArea');
-        if (!bomData.length) { div.innerHTML = "<p>BOM 文件为空</p>"; return; }
+        if (!bomData || !bomData.length) { div.innerHTML = "<p>BOM 文件为空</p>"; return; }
 
         const matchMode = document.querySelector('input[name="matchMode"]:checked').value;
         const isModeSpec = (matchMode === 'spec');
@@ -398,15 +415,10 @@
                 }
             }
 
-            // ★★★ 操作栏：增加搜索按钮 ★★★
-            // 对未找到或不符的项，提供搜索功能
             let actions = ``;
-            
-            // 搜索按钮 (传入规格作为初始关键词)
-            const searchKeyword = bomSpec.replace(/"/g, "&quot;"); // 简单的转义
+            const searchKeyword = bomSpec.replace(/"/g, "&quot;");
             actions += `<button onclick="openSearchModal('${encodeURIComponent(searchKeyword)}')" class="btn-primary" style="padding:4px 8px; font-size:12px; width:auto; margin-right:5px; background-color:#3498db;">🔍 找</button>`;
             
-            // 复制正确值按钮
             if (sysItem) {
                 const copyVal = isModeSpec ? sysItem.pn : sysItem.spec;
                 const copyLabel = isModeSpec ? '品号' : '规格';
@@ -433,14 +445,13 @@
     }
 
     // ==========================================
-    // 模块 3: 弹窗搜库 (Modal Logic)
+    // 模块 3: 弹窗搜库
     // ==========================================
     function openSearchModal(encodedKeyword) {
         const keyword = decodeURIComponent(encodedKeyword);
         document.getElementById('modalInput').value = keyword;
         document.getElementById('searchModal').style.display = "block";
         document.getElementById('modalInput').focus();
-        // 自动触发一次搜索（可选，如果关键词太长可能搜不到，用户可以修改后回车）
         runModalSearch(); 
     }
 
@@ -453,15 +464,12 @@
         const container = document.getElementById('modalResultArea');
         
         if (!rawInput) { container.innerHTML = ""; return; }
-        
-        // 支持空格分隔的多关键词 (AND 逻辑)
         const keywords = rawInput.split(/\s+/);
         
         const results = globalDB.filter(item => {
             const fullStr = (item.pn + " " + item.spec + " " + item.name).toLowerCase();
-            // 检查是否包含所有关键词
             return keywords.every(kw => fullStr.includes(kw));
-        }); // 限制显示前 50 条防止卡顿
+        }); 
 
         if (results.length === 0) {
             container.innerHTML = `<div style="padding:20px; text-align:center; color:red;">未找到匹配项，请精简关键词重试</div>`;
@@ -489,7 +497,6 @@
             ${html}
         `;
     }
-
 
     // ==========================================
     // 模块 4: 通用 UI 与复制
